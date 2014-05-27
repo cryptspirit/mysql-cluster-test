@@ -3,6 +3,8 @@ import MySQLdb
 from _mysql_exceptions import OperationalError
 from os import fork
 from time import sleep, time
+from contextlib import closing
+from uuid import uuid4
 
 def spin(count, pid=1):
     if pid == 0:
@@ -20,7 +22,7 @@ mysql_table = 'pytable'
 
 mysql_pool = [
     {
-        'host': 'test4.tr.cslab',
+        'host': '10.0.2.87',
         'port': mysql_port,
         'user': mysql_user,
         'passwd': mysql_password,
@@ -29,7 +31,7 @@ mysql_pool = [
         'charset': 'utf8',
     },
     {
-        'host': 'test5.tr.cslab',
+        'host': '10.0.2.98',
         'port': mysql_port,
         'user': mysql_user,
         'passwd': mysql_password,
@@ -42,10 +44,14 @@ mysql_pool = [
 create_table = r'''
 CREATE TABLE %s (
     id MEDIUMINT NOT NULL AUTO_INCREMENT,
-    comments VARCHAR(1024) NOT NULL,
+    uuid VARCHAR(128) NOT NULL,
+    comments VARCHAR(1024),
     write_from VARCHAR(1024) NOT NULL,
     PRIMARY KEY  (`id`)
 )
+'''
+create_index1 = r'''
+CREATE UNIQUE INDEX %s ON %s (%s)
 '''
 
 def mysql_connection(mysql_coroutine):
@@ -73,9 +79,13 @@ class Test(unittest.TestCase):
     def master(self, query, commit=False):
         ''' Query from master
         '''
-        r = self.cursor.execute(query)
+        db = self.db()
+        cursor = db.cursor()
+        r = cursor.execute(query)
         if commit:
-            self.db.commit()
+            db.commit()
+        cursor.close()
+        db.close()
         return r
 
     @mysql_connection
@@ -83,9 +93,13 @@ class Test(unittest.TestCase):
         ''' Query from slave or other server
         '''
         if not i: i = self.roundrobin()
-        r = self.cursors[i].execute(query)
+        db = self.dbs[i]()
+        cursor = db.cursor()
+        r = cursor.execute(query)
         if commit:
-            self.dbs[i].commit()
+            db.commit()
+        cursor.close()
+        db.close()
         return r
 
     def _current(self):
@@ -96,7 +110,7 @@ class Test(unittest.TestCase):
             i = 0
         self.id = i
 
-    def _prepaire(self):
+    def _prepare(self):
         ''' Prepaire DB for test
         '''
         try:
@@ -107,26 +121,24 @@ class Test(unittest.TestCase):
         else:
             cursor.execute('''DROP TABLE IF EXISTS %s''' % mysql_table)
             cursor.execute(create_table % mysql_table)
+            cursor.execute(create_index1 % ('uuid', mysql_table, 'uuid'))
         cursor.close()
         db.close()
 
     def setUp(self):
-        self._prepaire()
+        self.uuid = uuid4()
+        self._prepare()
         self._current()
         self.mysql = mysql_pool
-        try:
-            self.dbs = []
-            self.cursors = []
-            for j in mysql_pool:
-                self.dbs.append(MySQLdb.connect(**j))
-                self.cursors.append(self.dbs[-1].cursor())
-        except OperationalError, e:
-            self.fail(e)
+        self.dbs = []
+        for j in mysql_pool:
+            self.dbs.append(lambda: MySQLdb.connect(**j))
 
         self.db = self.dbs[self.id]
-        self.cursor = self.cursors[self.id]
         self.table = mysql_table
 
 
     def tearDown(self):
-        self.db.close()
+        pass
+        #for i in self.dbs:
+        #    i.close()
